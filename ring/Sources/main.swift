@@ -49,9 +49,18 @@ struct RingContent: View {
 }
 
 /// Drags move the window; plain clicks reach the ring; works without focusing the app first.
+/// Takes every click in the window, even on the ring's transparent parts, so none reach the page behind it
+/// (whose WebKit menu would show instead of ours).
 final class RingHost: NSHostingView<RingContent> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func mouseDragged(with event: NSEvent) { window?.performDrag(with: event) }
+    override func hitTest(_ point: NSPoint) -> NSView? { frame.contains(point) ? (super.hitTest(point) ?? self) : nil }
+    override func menu(for event: NSEvent) -> NSMenu? { menu }
+}
+
+/// The page only runs the call; it never takes clicks.
+final class PassiveWebView: WKWebView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 final class Delegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNavigationDelegate, WKScriptMessageHandler {
@@ -75,7 +84,7 @@ final class Delegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNavigatio
         config.mediaTypesRequiringUserActionForPlayback = []
         config.userContentController.add(self, name: "ring")
         // Stays visible (transparent, under the ring) so the page keeps its frame loop running.
-        web = WKWebView(frame: NSRect(x: 0, y: 0, width: size, height: size), configuration: config)
+        web = PassiveWebView(frame: NSRect(x: 0, y: 0, width: size, height: size), configuration: config)
         web.setValue(false, forKey: "drawsBackground")
         web.uiDelegate = self
         web.navigationDelegate = self
