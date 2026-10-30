@@ -18,6 +18,8 @@ let ringLayers = max(1, Int(ProcessInfo.processInfo.environment["CODEX_VOICE_RIN
 /// What the page last reported. `level` is read by the ring every frame, so it is not observed.
 @Observable final class Call {
     var state: VoiceState = .idle
+    /// An agent in Herdr is waiting for approval: the ring turns amber.
+    var approval = false
     @ObservationIgnored var level = 0.0
 }
 
@@ -32,6 +34,9 @@ struct RingContent: View {
                 VoiceRing(state: call.state, source: .level { [call] in call.level }, style: style, size: ringSize)
             }
         }
+            // Multiplying keeps the white core bright and pulls the spectrum to amber.
+            .colorMultiply(call.approval ? Color(red: 1, green: 0.72, blue: 0.1) : .white)
+            .animation(.easeInOut(duration: 0.4), value: call.approval)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Circle())
             .onTapGesture(perform: toggle)
@@ -96,6 +101,8 @@ final class Delegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNavigatio
         default: .idle
         }
         if call.state != state { call.state = state }
+        let approval = (body["approval"] as? NSNumber)?.boolValue ?? false
+        if call.approval != approval { call.approval = approval }
     }
 
     // Mic for our own page only.

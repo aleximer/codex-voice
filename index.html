@@ -25,7 +25,7 @@ const ring = document.getElementById("ring"), state = document.getElementById("s
 const native = window.webkit?.messageHandlers?.ring;
 if (new URLSearchParams(location.search).has("float")) document.documentElement.classList.add("float");
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-let pc, audio, micLevel = () => 0, voiceLevel = () => 0, busy = false, mode = "idle";
+let pc, audio, micLevel = () => 0, voiceLevel = () => 0, busy = false, approval = false, mode = "idle";
 
 // RMS level 0..1 of a stream, via Web Audio.
 function meter(stream) {
@@ -37,10 +37,9 @@ function meter(stream) {
   return () => { a.getFloatTimeDomainData(buf); let s = 0; for (const v of buf) s += v * v; return Math.min(1, Math.sqrt(s / buf.length) * 6); };
 }
 
-// Operator busy flag, so the ring shows "working" while Claude drives Herdr.
+// Operator busy flag, so the ring shows "working" while Claude drives Herdr; approval turns it amber, call or not.
 setInterval(async () => {
-  if (!pc) return;
-  try { busy = (await (await fetch("/state")).json()).busy; } catch {}
+  try { ({ busy, approval } = await (await fetch("/state")).json()); } catch {}
 }, 500);
 
 // Keep the canvas backing store matched to its CSS size, so the ring stays sharp at any window size.
@@ -58,8 +57,8 @@ function draw() {
   mode = !pc ? "idle" : voice > 0.04 ? "speaking" : busy ? "working" : "listening";
   const level = mode === "speaking" ? voice : mode === "listening" ? you : 0;
   smooth += (level - smooth) * 0.25;
-  native?.postMessage({ mode, level });
-  const color = css({ idle: "--muted", listening: "--you", speaking: "--voice", working: "--work" }[mode]);
+  native?.postMessage({ mode, level, approval });
+  const color = approval ? "#ffb300" : css({ idle: "--muted", listening: "--you", speaking: "--voice", working: "--work" }[mode]);
   // All sizes below were tuned on a 520px canvas; s scales them to the current one.
   const W = ring.width, c = W / 2, base = W * 0.3, s = W / 520;
   g.clearRect(0, 0, W, W);

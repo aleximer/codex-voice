@@ -71,12 +71,15 @@ function ask(id, text) {
   operator.stdin.write(JSON.stringify({ type: "user", message: { role: "user", content: text } }) + "\n");
 }
 
-// ---- Tell the voice when an agent the operator handed work to finishes or needs approval.
+// ---- Tell the voice when an agent the operator handed work to finishes or needs approval, and flag any agent
+// waiting for approval so the ring turns amber, call or not.
 // ponytail: 3 s poll of `herdr agent list`; switch to `herdr agent wait` per target if polling shows up in CPU.
+let approval = false;
 setInterval(async () => {
-  if (!watched.size || !control) return;
   let agents;
   try { agents = JSON.parse((await exec(HERDR, ["agent", "list"], { maxBuffer: 8 << 20 })).stdout).result.agents; } catch { return; }
+  approval = agents.some((a) => a.agent_status === "blocked");
+  if (!control) return;
   for (const [target, last] of watched) {
     const a = agents.find((x) => x.pane_id === target || x.name === target || x.terminal_title_stripped === target);
     if (!a) continue;
@@ -176,7 +179,7 @@ async function startCall(sdp) {
 const page = readFileSync(new URL("./index.html", import.meta.url));
 createServer(async (req, res) => {
   if (req.method === "GET" && (req.url === "/" || req.url === "/?float")) return res.writeHead(200, { "content-type": "text/html" }).end(page);
-  if (req.method === "GET" && req.url === "/state") return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ busy: waiting.length > 0 }));
+  if (req.method === "GET" && req.url === "/state") return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ busy: waiting.length > 0, approval }));
   if (req.method === "POST" && req.url === "/offer") {
     let sdp = "";
     for await (const c of req) { sdp += c; if (sdp.length > 262144) return res.writeHead(413).end(); }
