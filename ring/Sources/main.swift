@@ -25,6 +25,7 @@ func tint(_ name: String, _ fallback: Color) -> Color {
 let inCallTint = tint("CODEX_VOICE_RING_CALL_COLOR", .white)                                  // call up: the ring's own colours
 let idleTint = tint("CODEX_VOICE_RING_IDLE_COLOR", Color(red: 0.35, green: 0.85, blue: 0.75)) // no call: teal
 let dictateTint = tint("CODEX_VOICE_RING_DICTATE_COLOR", Color(red: 0.3, green: 0.95, blue: 0.4)) // dictating: green
+let droppedTint = Color(red: 1, green: 0.23, blue: 0.19) // call dropped or failed: red flash
 let approvalTint = tint("CODEX_VOICE_RING_APPROVAL_COLOR", Color(red: 1, green: 0.72, blue: 0.1)) // agent waits: amber
 
 /// What the page last reported. `level` is read by the ring every frame, so it is not observed.
@@ -36,6 +37,8 @@ let approvalTint = tint("CODEX_VOICE_RING_APPROVAL_COLOR", Color(red: 1, green: 
     var muted = false
     /// A dictation call: speech is typed into the focused pane; the ring turns green.
     var dictating = false
+    /// The call just dropped or failed: a short red flash.
+    var dropped = false
     @ObservationIgnored var level = 0.0
 }
 
@@ -64,9 +67,10 @@ struct RingContent: View {
             .saturation(call.muted ? 0 : 1)
             .opacity(call.muted ? 0.45 : 1)
             // Approval wins over the call state; muted (grey, above) only happens in a call.
-            .colorMultiply(call.approval ? approvalTint : call.dictating ? dictateTint : call.state == .idle ? idleTint : inCallTint)
+            .colorMultiply(call.dropped ? droppedTint : call.approval ? approvalTint : call.dictating ? dictateTint : call.state == .idle ? idleTint : inCallTint)
             .animation(.easeInOut(duration: 0.4), value: call.approval)
             .animation(.easeInOut(duration: 0.4), value: call.dictating)
+            .animation(.easeInOut(duration: 0.25), value: call.dropped)
             .animation(.easeInOut(duration: 0.4), value: call.state)
             .animation(.easeInOut(duration: 0.25), value: call.muted)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -175,6 +179,8 @@ final class Delegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNavigatio
         if call.muted != muted { call.muted = muted }
         let dictating = (body["dictating"] as? NSNumber)?.boolValue ?? false
         if call.dictating != dictating { call.dictating = dictating }
+        let dropped = (body["dropped"] as? NSNumber)?.boolValue ?? false
+        if call.dropped != dropped { call.dropped = dropped }
     }
 
     // Mic for our own page only.

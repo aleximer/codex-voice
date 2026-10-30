@@ -250,7 +250,11 @@ async function startCall(sdp, dictate = false) {
   const socket = control = new WebSocket(LIVE_URL + encodeURIComponent(id), { headers: headersFor(creds) });
   let said = ""; // this utterance's transcript so far
   socket.onopen = () => console.log(`call ${id} connected`);
-  socket.onclose = (e) => { console.log(`call closed (${e.code})`); if (control === socket) control = null; };
+  // Still the current socket means nobody hung up (POST /stop clears it first): the call dropped.
+  socket.onclose = (e) => {
+    console.log(`call closed (${e.code})`);
+    if (control === socket) { control = null; dropped = true; console.log("call dropped: the page hangs up and the ring flashes red"); }
+  };
   socket.onmessage = ({ data }) => {
     let ev; try { ev = JSON.parse(data); } catch { return; }
     if (ev.type === "error") console.error("voice error:", JSON.stringify(ev.error));
@@ -274,11 +278,15 @@ async function startCall(sdp, dictate = false) {
 // ---- Page: mic + WebRTC audio. Local only.
 const page = readFileSync(new URL("./index.html", import.meta.url));
 let cmd = null; // call | dictate | ring, for the page to run
+let dropped = false; // the voice service closed the call; told to the page once
+// Seconds without speech before the page hangs up (0: never), so a forgotten call stops using the quota.
+const IDLE_SECONDS = Number(process.env.CODEX_VOICE_IDLE_SECONDS ?? 120);
 createServer(async (req, res) => {
   if (req.method === "GET" && (req.url === "/" || req.url === "/?float")) return res.writeHead(200, { "content-type": "text/html" }).end(page);
   if (req.method === "GET" && req.url === "/state") {
-    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ busy: waiting.length > 0, approval, cmd }));
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ busy: waiting.length > 0, approval, cmd, dropped, idleSeconds: IDLE_SECONDS }));
     cmd = null;
+    dropped = false;
     return;
   }
   // Plugin actions (Herdr keybindings): the page picks the command up with its next /state poll.

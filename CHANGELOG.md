@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- A dropped or failed call hangs up the page and flashes the ring red, instead of looking connected.
+- Calls hang up after two minutes without speech (`CODEX_VOICE_IDLE_SECONDS`, `0` = never).
+- README.
+
 - Herdr shortcuts: plugin actions `call`, `dictate` and `ring` (bind them under `[[keys.command]]`).
   Each starts the voice pane if it isn't running.
 - The call shortcut during dictation switches straight to a call.

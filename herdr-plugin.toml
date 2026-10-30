@@ -12,7 +12,7 @@ platforms = ["macos", "linux"]
 # Ring tints, "#rrggbb": CODEX_VOICE_RING_IDLE_COLOR (no call, teal), CODEX_VOICE_RING_CALL_COLOR (in a call,
 # white = the ring's own colours), CODEX_VOICE_RING_DICTATE_COLOR (dictating, green),
 # CODEX_VOICE_RING_APPROVAL_COLOR (agent waiting, amber).
-# CODEX_VOICE_BROWSER=1 skips the ring.
+# CODEX_VOICE_BROWSER=1 skips the ring. CODEX_VOICE_IDLE_SECONDS: hang up after this long without speech (default 120, 0 = never).
 [[build]]
 command = ["sh", "ring/build.sh"]
 

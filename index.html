@@ -27,6 +27,7 @@ if (new URLSearchParams(location.search).has("float")) document.documentElement.
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 let pc, audio, micLevel = () => 0, voiceLevel = () => 0, busy = false, approval = false, mode = "idle";
 let micTrack = null, muted = false;
+let lastActivity = 0, idleSeconds = 120, droppedUntil = 0; // droppedUntil: the ring flashes red until then
 
 // Mute stops sending the mic (the call stays up). The native ring calls toggleMute from its menu; M here.
 function toggleMute() {
@@ -47,8 +48,11 @@ function meter(stream) {
 
 // Operator busy flag, so the ring shows "working" while Claude drives Herdr; approval turns it amber, call or not.
 setInterval(async () => {
-  let cmd;
-  try { ({ busy, approval, cmd } = await (await fetch("/state")).json()); } catch {}
+  let cmd, dropped;
+  try { ({ busy, approval, cmd, dropped, idleSeconds } = await (await fetch("/state")).json()); } catch {}
+  if (dropped && pc) hangUp("Call dropped. Click to call again.", true);
+  // Hang up a forgotten call: no speech either way and no operator work for idleSeconds.
+  if (pc && idleSeconds > 0 && Date.now() - lastActivity > idleSeconds * 1000) hangUp("Hung up after silence. Click to call again.");
   // From the plugin's actions: call or dictate start/stop the call; ring shows or hides the floating ring.
   // During dictation the call shortcut switches straight to a call; the hang-up must land before the new offer.
   if (cmd === "call") pc && dictating ? hangUp().then(() => call(false)) : ring.onclick();
@@ -70,9 +74,11 @@ function draw() {
   const you = micLevel(), voice = voiceLevel();
   mode = !pc ? "idle" : voice > 0.04 ? "speaking" : busy ? "working" : muted ? "muted" : "listening";
   const level = mode === "speaking" ? voice : mode === "listening" ? you : 0;
+  if (busy || voice > 0.04 || (!muted && you > 0.1)) lastActivity = Date.now();
+  const dropped = Date.now() < droppedUntil;
   smooth += (level - smooth) * 0.25;
-  native?.postMessage({ mode, level, approval, muted: !!pc && muted, dictating: !!pc && dictating });
-  const color = approval ? "#ffb300" : pc && dictating && !muted ? "#34d058" : css({ idle: "--muted", muted: "--muted", listening: "--you", speaking: "--voice", working: "--work" }[mode]);
+  native?.postMessage({ mode, level, approval, muted: !!pc && muted, dictating: !!pc && dictating, dropped });
+  const color = dropped ? "#ff3b30" : approval ? "#ffb300" : pc && dictating && !muted ? "#34d058" : css({ idle: "--muted", muted: "--muted", listening: "--you", speaking: "--voice", working: "--work" }[mode]);
   g.setLineDash(mode === "muted" ? [6 * (ring.width / 520), 14 * (ring.width / 520)] : []); // dashed: mic off
   // All sizes below were tuned on a 520px canvas; s scales them to the current one.
   const W = ring.width, c = W / 2, base = W * 0.3, s = W / 520;
@@ -105,8 +111,9 @@ function draw() {
 }
 requestAnimationFrame(draw);
 
-async function hangUp(message = "Click the ring to start") {
+async function hangUp(message = "Click the ring to start", failed = false) {
   pc?.close(); pc = null; micLevel = voiceLevel = () => 0;
+  if (failed) droppedUntil = Date.now() + 2500;
   state.textContent = message;
   return fetch("/stop", { method: "POST" }).catch(() => {});
 }
@@ -119,6 +126,7 @@ addEventListener("keydown", (e) => { if (e.key === "d" || e.key === "D") dictate
 ring.onclick = () => (pc ? hangUp() : call(false));
 async function call(dictate) {
   dictating = dictate;
+  lastActivity = Date.now();
   document.getElementById("out").muted = dictate;
   try {
     state.textContent = "Asking for the microphone…";
@@ -128,7 +136,7 @@ async function call(dictate) {
     micTrack = mic.getAudioTracks()[0];
     micTrack.enabled = !muted;
     pc.ontrack = (e) => { document.getElementById("out").srcObject = e.streams[0]; voiceLevel = meter(e.streams[0]); };
-    pc.onconnectionstatechange = () => { if (["failed", "closed"].includes(pc?.connectionState)) hangUp("Call ended. Click to call again."); };
+    pc.onconnectionstatechange = () => { if (["failed", "closed"].includes(pc?.connectionState)) hangUp("Call dropped. Click to call again.", true); };
     mic.getTracks().forEach((tr) => pc.addTrack(tr, mic));
     pc.createDataChannel("oai-events");
     await pc.setLocalDescription(await pc.createOffer());
@@ -139,7 +147,7 @@ async function call(dictate) {
     if (!res.ok) throw new Error(text);
     await pc.setRemoteDescription({ type: "answer", sdp: text });
   } catch (e) {
-    hangUp("Failed: " + e.message);
+    hangUp("Failed: " + e.message, true);
   }
 }
 </script>
