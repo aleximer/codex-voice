@@ -5,7 +5,9 @@
 import { createServer } from "node:http";
 import { spawn, execFile } from "node:child_process";
 import { createInterface } from "node:readline";
-import { readFileSync, existsSync, realpathSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, dirname } from "node:path";
 import { promisify } from "node:util";
 
 const exec = promisify(execFile);
@@ -27,6 +29,8 @@ and close panes and tabs; start agents; prompt agents; read panes; list and invo
 (herdr plugin action). Open web pages with /Applications/Herdr.app/Contents/MacOS/Herdr browser open.
 Never do coding work yourself: hand it to the agent the user named (herdr agent prompt TARGET TEXT, without --wait)
 and say you handed it over; the voice is told when that agent finishes. If no agent was named and it is ambiguous, ask.
+A request may start with a [Focus changed …] note: that pane is what the user is looking at now, so "this agent",
+"here" or an unnamed agent means it; mention the switch briefly in your reply when it matters.
 Do not close panes or tabs that run an agent, or approve an agent's permission prompt, unless the user said so explicitly.
 Your final reply is spoken aloud: one or two plain sentences, no code, paths, URLs or markdown.`;
 
@@ -64,11 +68,42 @@ function startOperator() {
   return child;
 }
 
+// Focus seen at the previous request, kept in a file so it survives restarts.
+const FOCUS_FILE = join(homedir(), ".local/state/codex-voice/focus.json");
+
+/** A note for the operator when Herdr's focused pane changed since the last request, else "". */
+async function focusNote() {
+  let snap;
+  try { snap = JSON.parse((await exec(HERDR, ["api", "snapshot"], { maxBuffer: 16 << 20 })).stdout).result.snapshot; } catch { return ""; }
+  const pane = snap.panes?.find((p) => p.pane_id === snap.focused_pane_id);
+  if (!pane) return "";
+  const agent = snap.agents?.find((a) => a.pane_id === pane.pane_id);
+  const now = {
+    pane: pane.pane_id,
+    workspace: snap.workspaces?.find((w) => w.workspace_id === pane.workspace_id)?.label ?? pane.workspace_id,
+    tab: snap.tabs?.find((t) => t.tab_id === pane.tab_id)?.label ?? pane.tab_id,
+    agent: agent?.name ?? pane.agent ?? null,
+    title: pane.terminal_title_stripped || null,
+  };
+  let before = null;
+  try { before = JSON.parse(readFileSync(FOCUS_FILE, "utf8")); } catch {}
+  try { mkdirSync(dirname(FOCUS_FILE), { recursive: true }); writeFileSync(FOCUS_FILE, JSON.stringify(now)); } catch {}
+  if (before?.pane === now.pane) return "";
+  const who = now.agent ? `${now.agent}${now.title ? ` ("${now.title}")` : ""}` : "no agent (a plain terminal)";
+  return `[Focus changed since the last request: the user is now looking at pane ${now.pane} in workspace "${now.workspace}", tab "${now.tab}", running ${who}.]\n`;
+}
+
+// Requests go to the operator in order, each after its focus check.
+let queue = Promise.resolve();
 function ask(id, text) {
   console.log(`you → operator: ${text}`);
   operator ??= startOperator();
   waiting.push(id);
-  operator.stdin.write(JSON.stringify({ type: "user", message: { role: "user", content: text } }) + "\n");
+  queue = queue.then(async () => {
+    const note = await focusNote();
+    if (note) console.log(`  ${note.trim()}`);
+    operator?.stdin.write(JSON.stringify({ type: "user", message: { role: "user", content: note + text } }) + "\n");
+  });
 }
 
 // ---- Tell the voice when an agent the operator handed work to finishes or needs approval, and flag any agent
