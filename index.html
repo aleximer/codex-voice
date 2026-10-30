@@ -26,6 +26,14 @@ const native = window.webkit?.messageHandlers?.ring;
 if (new URLSearchParams(location.search).has("float")) document.documentElement.classList.add("float");
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 let pc, audio, micLevel = () => 0, voiceLevel = () => 0, busy = false, approval = false, mode = "idle";
+let micTrack = null, muted = false;
+
+// Mute stops sending the mic (the call stays up). The native ring calls toggleMute from its menu; M here.
+function toggleMute() {
+  muted = !muted;
+  if (micTrack) micTrack.enabled = !muted;
+}
+addEventListener("keydown", (e) => { if (e.key === "m" || e.key === "M") toggleMute(); });
 
 // RMS level 0..1 of a stream, via Web Audio.
 function meter(stream) {
@@ -54,11 +62,12 @@ let smooth = 0, t = 0;
 function draw() {
   t += 1 / 60;
   const you = micLevel(), voice = voiceLevel();
-  mode = !pc ? "idle" : voice > 0.04 ? "speaking" : busy ? "working" : "listening";
+  mode = !pc ? "idle" : voice > 0.04 ? "speaking" : busy ? "working" : muted ? "muted" : "listening";
   const level = mode === "speaking" ? voice : mode === "listening" ? you : 0;
   smooth += (level - smooth) * 0.25;
-  native?.postMessage({ mode, level, approval });
-  const color = approval ? "#ffb300" : css({ idle: "--muted", listening: "--you", speaking: "--voice", working: "--work" }[mode]);
+  native?.postMessage({ mode, level, approval, muted: !!pc && muted });
+  const color = approval ? "#ffb300" : css({ idle: "--muted", muted: "--muted", listening: "--you", speaking: "--voice", working: "--work" }[mode]);
+  g.setLineDash(mode === "muted" ? [6 * (ring.width / 520), 14 * (ring.width / 520)] : []); // dashed: mic off
   // All sizes below were tuned on a 520px canvas; s scales them to the current one.
   const W = ring.width, c = W / 2, base = W * 0.3, s = W / 520;
   g.clearRect(0, 0, W, W);
@@ -84,7 +93,7 @@ function draw() {
     g.strokeStyle = color; g.lineWidth = 6 * s; g.stroke();
   }
   g.globalAlpha = 1;
-  if (pc) state.textContent = { listening: "Listening", speaking: "Speaking", working: "Working on it…" }[mode];
+  if (pc) state.textContent = { listening: "Listening", muted: "Muted (press M)", speaking: "Speaking", working: "Working on it…" }[mode];
   requestAnimationFrame(draw);
 }
 requestAnimationFrame(draw);
@@ -102,6 +111,8 @@ ring.onclick = async () => {
     const mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
     pc = new RTCPeerConnection();
     micLevel = meter(mic);
+    micTrack = mic.getAudioTracks()[0];
+    micTrack.enabled = !muted;
     pc.ontrack = (e) => { document.getElementById("out").srcObject = e.streams[0]; voiceLevel = meter(e.streams[0]); };
     pc.onconnectionstatechange = () => { if (["failed", "closed"].includes(pc?.connectionState)) hangUp("Call ended. Click to call again."); };
     mic.getTracks().forEach((tr) => pc.addTrack(tr, mic));

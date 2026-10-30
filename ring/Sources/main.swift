@@ -20,6 +20,8 @@ let ringLayers = max(1, Int(ProcessInfo.processInfo.environment["CODEX_VOICE_RIN
     var state: VoiceState = .idle
     /// An agent in Herdr is waiting for approval: the ring turns amber.
     var approval = false
+    /// In a call with the mic muted: the ring goes grey and dim.
+    var muted = false
     @ObservationIgnored var level = 0.0
 }
 
@@ -34,9 +36,12 @@ struct RingContent: View {
                 VoiceRing(state: call.state, source: .level { [call] in call.level }, style: style, size: ringSize)
             }
         }
+            .saturation(call.muted ? 0 : 1)
+            .opacity(call.muted ? 0.45 : 1)
             // Multiplying keeps the white core bright and pulls the spectrum to amber.
             .colorMultiply(call.approval ? Color(red: 1, green: 0.72, blue: 0.1) : .white)
             .animation(.easeInOut(duration: 0.4), value: call.approval)
+            .animation(.easeInOut(duration: 0.25), value: call.muted)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Circle())
             .onTapGesture(perform: toggle)
@@ -81,6 +86,7 @@ final class Delegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNavigatio
         })
         host.frame = web.frame
         host.menu = NSMenu()
+        host.menu?.addItem(withTitle: "Mute / unmute microphone", action: #selector(toggleMute), keyEquivalent: "").target = self
         host.menu?.addItem(withTitle: "Quit ring", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
 
         let root = NSView(frame: web.frame)
@@ -90,7 +96,9 @@ final class Delegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNavigatio
         window.orderFrontRegardless()
     }
 
-    // {mode, level} from the page: idle | listening | speaking | working.
+    @objc func toggleMute() { web.evaluateJavaScript("toggleMute()") }
+
+    // {mode, level, approval, muted} from the page; mode: idle | listening | muted | speaking | working.
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard let body = message.body as? [String: Any], let mode = body["mode"] as? String else { return }
         call.level = (body["level"] as? NSNumber)?.doubleValue ?? 0
@@ -103,6 +111,8 @@ final class Delegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNavigatio
         if call.state != state { call.state = state }
         let approval = (body["approval"] as? NSNumber)?.boolValue ?? false
         if call.approval != approval { call.approval = approval }
+        let muted = (body["muted"] as? NSNumber)?.boolValue ?? false
+        if call.muted != muted { call.muted = muted }
     }
 
     // Mic for our own page only.
