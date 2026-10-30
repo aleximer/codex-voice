@@ -49,6 +49,17 @@ struct RingContent: View {
             ForEach(0..<ringLayers, id: \.self) { _ in
                 VoiceRing(state: call.state, source: .level { [call] in call.level }, style: style, size: ringSize)
             }
+            // A small glowing badge in the middle while a call is up: phone for a call, mic for dictation.
+            // Muted maps to .idle, hence the extra checks.
+            if call.dictating || call.muted || call.state != .idle {
+                Image(systemName: call.dictating ? "mic.fill" : "phone.fill")
+                    .font(.system(size: ringSize * 0.14, weight: .semibold))
+                    .foregroundStyle(.white)
+                    // A coloured glow, so the white glyph still shows over light windows.
+                    .shadow(color: Color(red: 0.7, green: 0.35, blue: 1), radius: ringSize * 0.03)
+                    .shadow(color: Color(red: 1, green: 0.35, blue: 0.7).opacity(0.8), radius: ringSize * 0.08)
+                    .transition(.opacity)
+            }
         }
             .saturation(call.muted ? 0 : 1)
             .opacity(call.muted ? 0.45 : 1)
@@ -86,10 +97,13 @@ final class Delegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNavigatio
 
     func applicationDidFinishLaunching(_ note: Notification) {
         let size = (ringSize * 1.5).rounded()
-        let screen = NSScreen.main?.visibleFrame ?? .zero
-        window = NSWindow(
-            contentRect: NSRect(x: screen.maxX - size - 16, y: screen.minY + 16, width: size, height: size),
-            styleMask: [.borderless], backing: .buffered, defer: false)
+        window = NSWindow(contentRect: NSRect(origin: startOrigin(size), size: NSSize(width: size, height: size)),
+                          styleMask: [.borderless], backing: .buffered, defer: false)
+        // Only the position is kept: the size follows CODEX_VOICE_RING_SIZE.
+        NotificationCenter.default.addObserver(forName: NSWindow.didMoveNotification, object: window, queue: .main) { [weak self] _ in
+            guard let o = self?.window.frame.origin else { return }
+            UserDefaults.standard.set([o.x, o.y], forKey: "origin")
+        }
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = false
@@ -122,12 +136,31 @@ final class Delegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNavigatio
         window.orderFrontRegardless()
     }
 
+    /// Where the user last left the ring, pulled fully onto the screen it's mostly on (screens change between runs);
+    /// bottom-right of the main screen the first time, or when that spot is on no screen at all.
+    func startOrigin(_ size: CGFloat) -> NSPoint {
+        let main = NSScreen.main?.visibleFrame ?? .zero
+        let fallback = NSPoint(x: main.maxX - size - 16, y: main.minY + 16)
+        guard let saved = UserDefaults.standard.array(forKey: "origin") as? [Double], saved.count == 2 else { return fallback }
+        let frame = NSRect(x: saved[0], y: saved[1], width: size, height: size)
+        let area = { (s: NSScreen) in s.visibleFrame.intersection(frame).width * s.visibleFrame.intersection(frame).height }
+        guard let screen = NSScreen.screens.max(by: { area($0) < area($1) }), area(screen) > 0 else { return fallback }
+        let v = screen.visibleFrame
+        return NSPoint(x: min(max(frame.minX, v.minX), v.maxX - size), y: min(max(frame.minY, v.minY), v.maxY - size))
+    }
+
     @objc func toggleMute() { web.evaluateJavaScript("toggleMute()") }
     @objc func dictate() { web.evaluateJavaScript("dictate()") }
 
     // {mode, level, approval, muted} from the page; mode: idle | listening | muted | speaking | working.
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard let body = message.body as? [String: Any], let mode = body["mode"] as? String else { return }
+        guard let body = message.body as? [String: Any] else { return }
+        // Hiding the ring also ends any call, so nothing listens unseen.
+        if body["toggleWindow"] != nil {
+            if window.isVisible { web.evaluateJavaScript("if (pc) hangUp()"); window.orderOut(nil) } else { window.orderFrontRegardless() }
+            return
+        }
+        guard let mode = body["mode"] as? String else { return }
         call.level = (body["level"] as? NSNumber)?.doubleValue ?? 0
         let state: VoiceState = switch mode {
         case "listening": .listening

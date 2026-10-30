@@ -47,7 +47,13 @@ function meter(stream) {
 
 // Operator busy flag, so the ring shows "working" while Claude drives Herdr; approval turns it amber, call or not.
 setInterval(async () => {
-  try { ({ busy, approval } = await (await fetch("/state")).json()); } catch {}
+  let cmd;
+  try { ({ busy, approval, cmd } = await (await fetch("/state")).json()); } catch {}
+  // From the plugin's actions: call or dictate start/stop the call; ring shows or hides the floating ring.
+  // During dictation the call shortcut switches straight to a call; the hang-up must land before the new offer.
+  if (cmd === "call") pc && dictating ? hangUp().then(() => call(false)) : ring.onclick();
+  if (cmd === "dictate") dictate();
+  if (cmd === "ring") native?.postMessage({ toggleWindow: true });
 }, 500);
 
 // Keep the canvas backing store matched to its CSS size, so the ring stays sharp at any window size.
@@ -101,8 +107,8 @@ requestAnimationFrame(draw);
 
 async function hangUp(message = "Click the ring to start") {
   pc?.close(); pc = null; micLevel = voiceLevel = () => 0;
-  fetch("/stop", { method: "POST" }).catch(() => {});
   state.textContent = message;
+  return fetch("/stop", { method: "POST" }).catch(() => {});
 }
 
 // Dictation: what you say is typed into the focused Herdr pane; the voice stays silent. D here, or the ring's menu.

@@ -31,8 +31,8 @@ and close panes and tabs; start agents; prompt agents; read panes; list and invo
 (herdr plugin action). Open web pages with /Applications/Herdr.app/Contents/MacOS/Herdr browser open.
 Never do coding work yourself: hand it to the agent the user named (herdr agent prompt TARGET TEXT, without --wait)
 and say you handed it over; the voice is told when that agent finishes. If no agent was named and it is ambiguous, ask.
-A request may start with a [Focus changed …] note: that pane is what the user is looking at now, so "this agent",
-"here" or an unnamed agent means it; mention the switch briefly in your reply when it matters.
+A request may start with a [Where the user is as the call starts] or [Focus changed …] note: that pane (and any
+browser page listed) is what the user is looking at, so "this agent", "this page", "here" or an unnamed agent means it; mention the switch briefly in your reply when it matters.
 Do not close panes or tabs that run an agent, or approve an agent's permission prompt, unless the user said so explicitly.
 Your final reply is spoken aloud: one or two plain sentences, no code, paths, URLs or markdown.`;
 
@@ -73,12 +73,12 @@ function startOperator() {
 // Focus seen at the previous request, kept in a file so it survives restarts.
 const FOCUS_FILE = join(homedir(), ".local/state/codex-voice/focus.json");
 
-/** A note for the operator when Herdr's focused pane changed since the last request, else "". */
-async function focusNote() {
+/** Herdr's focused pane, its workspace, tab and agent; null if Herdr can't say. Saved as the last seen focus. */
+async function focusNow() {
   let snap;
-  try { snap = JSON.parse((await exec(HERDR, ["api", "snapshot"], { maxBuffer: 16 << 20 })).stdout).result.snapshot; } catch { return ""; }
+  try { snap = JSON.parse((await exec(HERDR, ["api", "snapshot"], { maxBuffer: 16 << 20 })).stdout).result.snapshot; } catch { return null; }
   const pane = snap.panes?.find((p) => p.pane_id === snap.focused_pane_id);
-  if (!pane) return "";
+  if (!pane) return null;
   const agent = snap.agents?.find((a) => a.pane_id === pane.pane_id);
   const now = {
     pane: pane.pane_id,
@@ -87,13 +87,48 @@ async function focusNote() {
     agent: agent?.name ?? pane.agent ?? null,
     title: pane.terminal_title_stripped || null,
   };
+  try { mkdirSync(dirname(FOCUS_FILE), { recursive: true }); writeFileSync(FOCUS_FILE, JSON.stringify(now)); } catch {}
+  return now;
+}
+const where = (f) => `pane ${f.pane} in workspace "${f.workspace}", tab "${f.tab}", running ${
+  f.agent ? `${f.agent}${f.title ? ` ("${f.title}")` : ""}` : "no agent (a plain terminal)"}`;
+
+/** A note for the operator when Herdr's focused pane changed since the last request, else "". */
+async function focusNote() {
   let before = null;
   try { before = JSON.parse(readFileSync(FOCUS_FILE, "utf8")); } catch {}
-  try { mkdirSync(dirname(FOCUS_FILE), { recursive: true }); writeFileSync(FOCUS_FILE, JSON.stringify(now)); } catch {}
-  if (before?.pane === now.pane) return "";
-  const who = now.agent ? `${now.agent}${now.title ? ` ("${now.title}")` : ""}` : "no agent (a plain terminal)";
-  return `[Focus changed since the last request: the user is now looking at pane ${now.pane} in workspace "${now.workspace}", tab "${now.tab}", running ${who}.]\n`;
+  const now = await focusNow();
+  if (!now || before?.pane === now.pane) return "";
+  return `[Focus changed since the last request: the user is now looking at ${where(now)}.]\n`;
 }
+
+/** Pages open in browsers beside the terminals: the active tab of each terminal-browser, and Herdr UI's
+ *  browser tabs when the app runs. [{title, url, pane?}] */
+async function openPages() {
+  const pages = [];
+  try {
+    const { browsers = [] } = JSON.parse((await exec("terminal-browser", ["ls", "--all", "--json"], { timeout: 3000 })).stdout);
+    for (const b of browsers) for (const t of b.tabs ?? []) if (t.active && t.url) pages.push({ title: t.title, url: t.url, pane: b.pane?.pane });
+  } catch {}
+  try {
+    // ponytail: Herdr UI's list shape isn't documented here; take any entry with a url that is active or focused.
+    const list = JSON.parse((await exec("/Applications/Herdr.app/Contents/MacOS/Herdr", ["browser", "list", "--json"], { timeout: 3000 })).stdout);
+    const walk = (v) => Array.isArray(v) ? v.forEach(walk) : v && typeof v === "object" && (
+      typeof v.url === "string" && (v.active || v.focused || v.selected) ? pages.push({ title: v.title, url: v.url }) : Object.values(v).forEach(walk));
+    walk(list);
+  } catch {}
+  return pages.filter((p) => !/^https?:\/\/(localhost|127\.0\.0\.1):\d+\/?(\?float)?$/.test(p.url)); // not our own page
+}
+
+/** Where the user is as a call starts, for the voice and the operator; "" if nothing is known. */
+async function callContext() {
+  const [focus, pages] = await Promise.all([focusNow(), openPages()]);
+  const lines = [];
+  if (focus) lines.push(`Focused: ${where(focus)}.`);
+  for (const p of pages.slice(0, 3)) lines.push(`Browser page open${p.pane === focus?.pane ? " in the focused pane" : ""}: "${p.title || p.url}" ${p.url}`);
+  return lines.length ? `[Where the user is as the call starts]\n${lines.join("\n")}\n` : "";
+}
+let callNote = ""; // sent with the call's first request, then the focus notes take over
 
 // Requests go to the operator in order, each after its focus check.
 let queue = Promise.resolve();
@@ -102,7 +137,8 @@ function ask(id, text) {
   operator ??= startOperator();
   waiting.push(id);
   queue = queue.then(async () => {
-    const note = await focusNote();
+    const note = callNote + await focusNote();
+    callNote = "";
     if (note) console.log(`  ${note.trim()}`);
     operator?.stdin.write(JSON.stringify({ type: "user", message: { role: "user", content: note + text } }) + "\n");
   });
@@ -190,12 +226,16 @@ async function paste(text) {
 }
 
 async function startCall(sdp, dictate = false) {
-  let creds = await credentials();
+  // The voice and the operator both learn where the user is, so "this agent" or "this page" needs no guessing.
+  const [c, here] = await Promise.all([credentials(), dictate ? "" : callContext()]);
+  let creds = c;
+  callNote = here;
+  if (here) console.log(here.trim());
   const body = JSON.stringify({ sdp, session: {
     model: "gpt-live-1-codex",
     audio: { output: { voice: process.env.VOICE || "cove" } },
     delegation: { type: "client" },
-    instructions: dictate ? DICTATE_INSTRUCTIONS : VOICE_INSTRUCTIONS,
+    instructions: dictate ? DICTATE_INSTRUCTIONS : here ? `${VOICE_INSTRUCTIONS}\n\n${here}` : VOICE_INSTRUCTIONS,
   } });
   const post = (c) => fetch(CALL_URL, { method: "POST", redirect: "error", headers: { ...headersFor(c), "content-type": "application/json" }, body });
   let res = await post(creds);
@@ -233,9 +273,22 @@ async function startCall(sdp, dictate = false) {
 
 // ---- Page: mic + WebRTC audio. Local only.
 const page = readFileSync(new URL("./index.html", import.meta.url));
+let cmd = null; // call | dictate | ring, for the page to run
 createServer(async (req, res) => {
   if (req.method === "GET" && (req.url === "/" || req.url === "/?float")) return res.writeHead(200, { "content-type": "text/html" }).end(page);
-  if (req.method === "GET" && req.url === "/state") return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ busy: waiting.length > 0, approval }));
+  if (req.method === "GET" && req.url === "/state") {
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ busy: waiting.length > 0, approval, cmd }));
+    cmd = null;
+    return;
+  }
+  // Plugin actions (Herdr keybindings): the page picks the command up with its next /state poll.
+  const m = req.method === "POST" && req.url.match(/^\/cmd\/(call|dictate|ring)$/);
+  if (m) {
+    // After Quit ring, show/hide starts it again rather than toggling a window that is gone.
+    if (m[1] === "ring" && !ring && process.env.CODEX_VOICE_BROWSER !== "1" && existsSync(RING)) launchRing();
+    else cmd = m[1];
+    return res.writeHead(204).end();
+  }
   if (req.method === "POST" && (req.url === "/offer" || req.url === "/offer?dictate")) {
     let sdp = "";
     for await (const c of req) { sdp += c; if (sdp.length > 262144) return res.writeHead(413).end(); }
@@ -252,15 +305,18 @@ createServer(async (req, res) => {
   const url = `http://localhost:${PORT}`;
   console.log(`codex-voice on ${url}`);
   // Default: the floating ring window (macOS, built by ring/build.sh). CODEX_VOICE_BROWSER=1 opens a browser tab instead.
-  if (process.env.CODEX_VOICE_BROWSER !== "1" && existsSync(RING)) {
-    // The real path, not the symlink: VoiceRingKit finds its shader bundle next to the executable.
-    ring = spawn(realpathSync(RING), [`${url}/?float`], { stdio: ["ignore", "ignore", "inherit"] });
-    ring.on("error", () => { ring = null; openBrowser(url); });
-    ring.on("exit", (code) => { if (ring) console.log(`ring window closed (${code ?? "signal"})`); ring = null; });
-    return console.log("floating ring is up: click it to call, drag to move, right-click to quit");
-  }
+  if (process.env.CODEX_VOICE_BROWSER !== "1" && existsSync(RING)) return launchRing();
   openBrowser(url);
 });
+
+function launchRing() {
+  const url = `http://localhost:${PORT}`;
+  // The real path, not the symlink: VoiceRingKit finds its shader bundle next to the executable.
+  ring = spawn(realpathSync(RING), [`${url}/?float`], { stdio: ["ignore", "ignore", "inherit"] });
+  ring.on("error", () => { ring = null; openBrowser(url); });
+  ring.on("exit", (code) => { if (ring) console.log(`ring window closed (${code ?? "signal"}); the show/hide ring action brings it back`); ring = null; });
+  console.log("floating ring is up: click it to call, drag to move, right-click for more");
+}
 
 const RING = new URL("./ring/codex-voice-ring", import.meta.url).pathname;
 let ring = null;

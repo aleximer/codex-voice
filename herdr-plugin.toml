@@ -28,3 +28,27 @@ id = "start"
 title = "Start voice"
 contexts = ["workspace"]
 command = ["sh", "-c", "exec \"$HERDR_BIN_PATH\" plugin pane open --plugin dorofeev.codex-voice --entrypoint voice"]
+
+# For keybindings, e.g. in ~/.config/herdr/config.toml:
+#   [[keys.command]]
+#   key = "prefix+alt+a"
+#   type = "plugin_action"
+#   command = "dorofeev.codex-voice.call"
+# Each one starts the voice pane first if it isn't running (press again once it is up).
+[[actions]]
+id = "call"
+title = "Call / hang up"
+contexts = ["workspace"]
+command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/cmd.sh\" call"]
+
+[[actions]]
+id = "dictate"
+title = "Dictate into focused pane / stop"
+contexts = ["workspace"]
+command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/cmd.sh\" dictate"]
+
+[[actions]]
+id = "ring"
+title = "Show / hide ring"
+contexts = ["workspace"]
+command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/cmd.sh\" ring"]
