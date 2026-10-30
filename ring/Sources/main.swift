@@ -11,6 +11,9 @@ import WebKit
 let target = URL(string: CommandLine.arguments.dropFirst().first ?? "http://localhost:8765/?float")!
 /// Ring diameter in points, from CODEX_VOICE_RING_SIZE (default 100). The window is larger so the glow isn't clipped.
 let ringSize = CGFloat(Double(ProcessInfo.processInfo.environment["CODEX_VOICE_RING_SIZE"] ?? "") ?? 100)
+/// Copies of the ring stacked on each other, from CODEX_VOICE_RING_GLOW (default 2): the ring's light is
+/// partly transparent, so over a clear window one copy looks faint; each extra copy makes it more solid.
+let ringLayers = max(1, Int(ProcessInfo.processInfo.environment["CODEX_VOICE_RING_GLOW"] ?? "") ?? 2)
 
 /// What the page last reported. `level` is read by the ring every frame, so it is not observed.
 @Observable final class Call {
@@ -22,7 +25,13 @@ struct RingContent: View {
     let call: Call
     let toggle: () -> Void
     var body: some View {
-        VoiceRing(state: call.state, source: .level { [call] in call.level }, size: ringSize)
+        var style = VoiceStyle()
+        style.theme = .dark // the bright look; .auto follows the system and renders faint in light mode
+        return ZStack {
+            ForEach(0..<ringLayers, id: \.self) { _ in
+                VoiceRing(state: call.state, source: .level { [call] in call.level }, style: style, size: ringSize)
+            }
+        }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Circle())
             .onTapGesture(perform: toggle)
