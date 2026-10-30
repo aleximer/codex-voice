@@ -10,6 +10,9 @@
   main { display: grid; justify-items: center; gap: 18px; padding: 16px; }
   canvas { width: min(80vw, 75vh); height: min(80vw, 75vh); cursor: pointer; }
   #state { color: var(--muted); min-height: 1.4em; text-align: center; max-width: 320px; }
+  /* ?float: behind the native floating ring, which draws the ring; the page only runs the call. */
+  .float, .float body { background: transparent; overflow: hidden; }
+  .float main { visibility: hidden; }
 </style>
 <main>
   <canvas id="ring" width="520" height="520" title="Click to start or hang up"></canvas>
@@ -18,6 +21,9 @@
 <audio id="out" autoplay></audio>
 <script>
 const ring = document.getElementById("ring"), state = document.getElementById("state"), g = ring.getContext("2d");
+// In the native floating window, report {mode, level} to its VoiceRing each frame instead of relying on the canvas.
+const native = window.webkit?.messageHandlers?.ring;
+if (new URLSearchParams(location.search).has("float")) document.documentElement.classList.add("float");
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 let pc, audio, micLevel = () => 0, voiceLevel = () => 0, busy = false, mode = "idle";
 
@@ -52,6 +58,7 @@ function draw() {
   mode = !pc ? "idle" : voice > 0.04 ? "speaking" : busy ? "working" : "listening";
   const level = mode === "speaking" ? voice : mode === "listening" ? you : 0;
   smooth += (level - smooth) * 0.25;
+  native?.postMessage({ mode, level });
   const color = css({ idle: "--muted", listening: "--you", speaking: "--voice", working: "--work" }[mode]);
   // All sizes below were tuned on a 520px canvas; s scales them to the current one.
   const W = ring.width, c = W / 2, base = W * 0.3, s = W / 520;

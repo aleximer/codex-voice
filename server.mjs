@@ -5,7 +5,7 @@
 import { createServer } from "node:http";
 import { spawn, execFile } from "node:child_process";
 import { createInterface } from "node:readline";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync, realpathSync } from "node:fs";
 import { promisify } from "node:util";
 
 const exec = promisify(execFile);
@@ -175,7 +175,7 @@ async function startCall(sdp) {
 // ---- Page: mic + WebRTC audio. Local only.
 const page = readFileSync(new URL("./index.html", import.meta.url));
 createServer(async (req, res) => {
-  if (req.method === "GET" && req.url === "/") return res.writeHead(200, { "content-type": "text/html" }).end(page);
+  if (req.method === "GET" && (req.url === "/" || req.url === "/?float")) return res.writeHead(200, { "content-type": "text/html" }).end(page);
   if (req.method === "GET" && req.url === "/state") return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ busy: waiting.length > 0 }));
   if (req.method === "POST" && req.url === "/offer") {
     let sdp = "";
@@ -192,6 +192,21 @@ createServer(async (req, res) => {
 }).listen(PORT, "127.0.0.1", () => {
   const url = `http://localhost:${PORT}`;
   console.log(`codex-voice on ${url}`);
+  // Default: the floating ring window (macOS, built by ring/build.sh). CODEX_VOICE_BROWSER=1 opens a browser tab instead.
+  if (process.env.CODEX_VOICE_BROWSER !== "1" && existsSync(RING)) {
+    // The real path, not the symlink: VoiceRingKit finds its shader bundle next to the executable.
+    ring = spawn(realpathSync(RING), [`${url}/?float`], { stdio: ["ignore", "ignore", "inherit"] });
+    ring.on("error", () => { ring = null; openBrowser(url); });
+    ring.on("exit", (code) => { if (ring) console.log(`ring window closed (${code ?? "signal"})`); ring = null; });
+    return console.log("floating ring is up: click it to call, drag to move, right-click to quit");
+  }
+  openBrowser(url);
+});
+
+const RING = new URL("./ring/codex-voice-ring", import.meta.url).pathname;
+let ring = null;
+
+function openBrowser(url) {
   // Prefer a Herdr UI tab beside this pane, then terminal-browser (needs "media" in its GRANTED permissions);
   // otherwise the user opens the URL in a browser that allows the mic.
   execFile("/Applications/Herdr.app/Contents/MacOS/Herdr", ["browser", "open", url, "--beside", "--no-focus"], (err) => {
@@ -204,7 +219,7 @@ createServer(async (req, res) => {
       });
     });
   });
-});
-process.on("exit", () => operator?.kill());
+}
+process.on("exit", () => { operator?.kill(); ring?.kill(); });
 process.on("SIGINT", () => process.exit());
 process.on("SIGTERM", () => process.exit());
