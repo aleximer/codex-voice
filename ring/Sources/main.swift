@@ -1,7 +1,7 @@
 // Floating ring: a frameless, transparent, always-on-top VoiceRing over other windows.
 // The call itself (mic, WebRTC, playback) runs in the codex-voice page, loaded in a web view behind the ring;
 // the page reports its state and audio level each frame, and a click on the ring starts or ends the call.
-// Click to call or hang up, drag to move, right-click for Quit.
+// Click to call or hang up, drag to move, right-click for dictation, mute and Quit.
 // Usage: codex-voice-ring [url]   (default http://localhost:8765/?float)
 import AppKit
 import SwiftUI
@@ -24,6 +24,7 @@ func tint(_ name: String, _ fallback: Color) -> Color {
 }
 let inCallTint = tint("CODEX_VOICE_RING_CALL_COLOR", .white)                                  // call up: the ring's own colours
 let idleTint = tint("CODEX_VOICE_RING_IDLE_COLOR", Color(red: 0.35, green: 0.85, blue: 0.75)) // no call: teal
+let dictateTint = tint("CODEX_VOICE_RING_DICTATE_COLOR", Color(red: 0.3, green: 0.95, blue: 0.4)) // dictating: green
 let approvalTint = tint("CODEX_VOICE_RING_APPROVAL_COLOR", Color(red: 1, green: 0.72, blue: 0.1)) // agent waits: amber
 
 /// What the page last reported. `level` is read by the ring every frame, so it is not observed.
@@ -33,6 +34,8 @@ let approvalTint = tint("CODEX_VOICE_RING_APPROVAL_COLOR", Color(red: 1, green: 
     var approval = false
     /// In a call with the mic muted: the ring goes grey and dim.
     var muted = false
+    /// A dictation call: speech is typed into the focused pane; the ring turns green.
+    var dictating = false
     @ObservationIgnored var level = 0.0
 }
 
@@ -50,8 +53,9 @@ struct RingContent: View {
             .saturation(call.muted ? 0 : 1)
             .opacity(call.muted ? 0.45 : 1)
             // Approval wins over the call state; muted (grey, above) only happens in a call.
-            .colorMultiply(call.approval ? approvalTint : call.state == .idle ? idleTint : inCallTint)
+            .colorMultiply(call.approval ? approvalTint : call.dictating ? dictateTint : call.state == .idle ? idleTint : inCallTint)
             .animation(.easeInOut(duration: 0.4), value: call.approval)
+            .animation(.easeInOut(duration: 0.4), value: call.dictating)
             .animation(.easeInOut(duration: 0.4), value: call.state)
             .animation(.easeInOut(duration: 0.25), value: call.muted)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -107,6 +111,7 @@ final class Delegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNavigatio
         })
         host.frame = web.frame
         host.menu = NSMenu()
+        host.menu?.addItem(withTitle: "Dictate into focused pane / stop", action: #selector(dictate), keyEquivalent: "").target = self
         host.menu?.addItem(withTitle: "Mute / unmute microphone", action: #selector(toggleMute), keyEquivalent: "").target = self
         host.menu?.addItem(withTitle: "Quit ring", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
 
@@ -118,6 +123,7 @@ final class Delegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNavigatio
     }
 
     @objc func toggleMute() { web.evaluateJavaScript("toggleMute()") }
+    @objc func dictate() { web.evaluateJavaScript("dictate()") }
 
     // {mode, level, approval, muted} from the page; mode: idle | listening | muted | speaking | working.
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -134,6 +140,8 @@ final class Delegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNavigatio
         if call.approval != approval { call.approval = approval }
         let muted = (body["muted"] as? NSNumber)?.boolValue ?? false
         if call.muted != muted { call.muted = muted }
+        let dictating = (body["dictating"] as? NSNumber)?.boolValue ?? false
+        if call.dictating != dictating { call.dictating = dictating }
     }
 
     // Mic for our own page only.

@@ -21,6 +21,8 @@ Talk briefly and naturally. Delegate to the client every request to do, check, o
 about the workspace, its panes, tabs, agents, or code; pass the user's request in their own words, including any
 agent or pane names they said. While a request runs, keep chatting or wait quietly.
 When results or agent updates arrive, say them in one or two sentences: never read code, paths, URLs or diffs aloud.`;
+// Dictation calls only want the user's transcript; the page also mutes the voice in case it talks anyway.
+const DICTATE_INSTRUCTIONS = `You are a dictation microphone. Never speak, answer, or delegate. Stay silent at all times.`;
 
 const OPERATOR_PROMPT = `You are the operator behind a voice assistant for Herdr. Each user message is a spoken request,
 transcribed, so expect loose wording and misheard names: match agents, panes, tabs and workspaces by meaning.
@@ -178,13 +180,22 @@ const reply = (id, text, channel = "speakable") => chunks(text).forEach((t) =>
 const context = (text, channel = "speakable") => chunks(text).forEach((t) =>
   send({ type: "session.context.append", channel, content: [{ type: "input_text", text: t }] }));
 
-async function startCall(sdp) {
+// Dictation: each finished utterance is typed into the focused Herdr pane, without Enter.
+async function paste(text) {
+  try {
+    const snap = JSON.parse((await exec(HERDR, ["api", "snapshot"], { maxBuffer: 16 << 20 })).stdout).result.snapshot;
+    await exec(HERDR, ["pane", "send-text", snap.focused_pane_id, text + " "]);
+    console.log(`dictated into ${snap.focused_pane_id}: ${text}`);
+  } catch (e) { console.error("dictation paste failed:", e.message); }
+}
+
+async function startCall(sdp, dictate = false) {
   let creds = await credentials();
   const body = JSON.stringify({ sdp, session: {
     model: "gpt-live-1-codex",
     audio: { output: { voice: process.env.VOICE || "cove" } },
     delegation: { type: "client" },
-    instructions: VOICE_INSTRUCTIONS,
+    instructions: dictate ? DICTATE_INSTRUCTIONS : VOICE_INSTRUCTIONS,
   } });
   const post = (c) => fetch(CALL_URL, { method: "POST", redirect: "error", headers: { ...headersFor(c), "content-type": "application/json" }, body });
   let res = await post(creds);
@@ -195,14 +206,24 @@ async function startCall(sdp) {
   if (!id) throw new Error("No call id in the answer.");
 
   control?.close();
-  operator ??= startOperator(); // warm it up while the call connects
+  if (!dictate) operator ??= startOperator(); // warm it up while the call connects
   const socket = control = new WebSocket(LIVE_URL + encodeURIComponent(id), { headers: headersFor(creds) });
+  let said = ""; // this utterance's transcript so far
   socket.onopen = () => console.log(`call ${id} connected`);
   socket.onclose = (e) => { console.log(`call closed (${e.code})`); if (control === socket) control = null; };
   socket.onmessage = ({ data }) => {
     let ev; try { ev = JSON.parse(data); } catch { return; }
     if (ev.type === "error") console.error("voice error:", JSON.stringify(ev.error));
     const item = ev.item;
+    if (dictate) {
+      if (ev.type === "input_transcript.added") said += item?.text || "";
+      if (ev.type === "turn.done" && ev.turn?.role === "user") {
+        const text = (ev.turn.transcript || said).trim();
+        said = "";
+        if (text) paste(text);
+      }
+      return;
+    }
     if (ev.type === "delegation.created" && item?.type === "delegation" && item.target === "client") {
       ask(item.id, (item.content || []).filter((p) => p.type === "input_text").map((p) => p.text).join(""));
     }
@@ -215,10 +236,10 @@ const page = readFileSync(new URL("./index.html", import.meta.url));
 createServer(async (req, res) => {
   if (req.method === "GET" && (req.url === "/" || req.url === "/?float")) return res.writeHead(200, { "content-type": "text/html" }).end(page);
   if (req.method === "GET" && req.url === "/state") return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ busy: waiting.length > 0, approval }));
-  if (req.method === "POST" && req.url === "/offer") {
+  if (req.method === "POST" && (req.url === "/offer" || req.url === "/offer?dictate")) {
     let sdp = "";
     for await (const c of req) { sdp += c; if (sdp.length > 262144) return res.writeHead(413).end(); }
-    try { const answer = await startCall(sdp); res.writeHead(200, { "content-type": "application/sdp" }).end(answer); }
+    try { const answer = await startCall(sdp, req.url.endsWith("?dictate")); res.writeHead(200, { "content-type": "application/sdp" }).end(answer); }
     catch (e) { console.error(e.message); res.writeHead(502).end(e.message); }
     return;
   }
