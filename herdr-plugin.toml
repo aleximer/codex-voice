@@ -8,7 +8,10 @@ description = "Talk to Herdr: Codex realtime voice, Claude Code operator that sw
 platforms = ["macos", "linux"]
 
 # The floating ring (macOS, needs Xcode). Without it the voice opens in a browser tab instead.
-# Ring size: CODEX_VOICE_RING_SIZE (points, default 100). CODEX_VOICE_BROWSER=1 skips the ring.
+# Ring size: CODEX_VOICE_RING_SIZE (points, default 100); brightness: CODEX_VOICE_RING_GLOW (copies, default 2).
+# Ring tints, "#rrggbb": CODEX_VOICE_RING_IDLE_COLOR (no call, teal), CODEX_VOICE_RING_CALL_COLOR (in a call,
+# white = the ring's own colours), CODEX_VOICE_RING_APPROVAL_COLOR (agent waiting, amber).
+# CODEX_VOICE_BROWSER=1 skips the ring.
 [[build]]
 command = ["sh", "ring/build.sh"]
 

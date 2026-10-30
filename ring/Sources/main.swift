@@ -15,6 +15,17 @@ let ringSize = CGFloat(Double(ProcessInfo.processInfo.environment["CODEX_VOICE_R
 /// partly transparent, so over a clear window one copy looks faint; each extra copy makes it more solid.
 let ringLayers = max(1, Int(ProcessInfo.processInfo.environment["CODEX_VOICE_RING_GLOW"] ?? "") ?? 2)
 
+/// A tint from a hex env var ("#rrggbb" or "rrggbb"), else the default. Tints multiply the ring's light:
+/// white keeps its own colours, and the white core takes on the tint.
+func tint(_ name: String, _ fallback: Color) -> Color {
+    let hex = (ProcessInfo.processInfo.environment[name] ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+    guard hex.count == 6, let v = UInt32(hex, radix: 16) else { return fallback }
+    return Color(red: Double(v >> 16 & 0xff) / 255, green: Double(v >> 8 & 0xff) / 255, blue: Double(v & 0xff) / 255)
+}
+let inCallTint = tint("CODEX_VOICE_RING_CALL_COLOR", .white)                                  // call up: the ring's own colours
+let idleTint = tint("CODEX_VOICE_RING_IDLE_COLOR", Color(red: 0.35, green: 0.85, blue: 0.75)) // no call: teal
+let approvalTint = tint("CODEX_VOICE_RING_APPROVAL_COLOR", Color(red: 1, green: 0.72, blue: 0.1)) // agent waits: amber
+
 /// What the page last reported. `level` is read by the ring every frame, so it is not observed.
 @Observable final class Call {
     var state: VoiceState = .idle
@@ -38,9 +49,10 @@ struct RingContent: View {
         }
             .saturation(call.muted ? 0 : 1)
             .opacity(call.muted ? 0.45 : 1)
-            // Multiplying keeps the white core bright and pulls the spectrum to amber.
-            .colorMultiply(call.approval ? Color(red: 1, green: 0.72, blue: 0.1) : .white)
+            // Approval wins over the call state; muted (grey, above) only happens in a call.
+            .colorMultiply(call.approval ? approvalTint : call.state == .idle ? idleTint : inCallTint)
             .animation(.easeInOut(duration: 0.4), value: call.approval)
+            .animation(.easeInOut(duration: 0.4), value: call.state)
             .animation(.easeInOut(duration: 0.25), value: call.muted)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Circle())
