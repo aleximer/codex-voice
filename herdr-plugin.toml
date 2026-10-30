@@ -1,0 +1,21 @@
+# codex-voice as a Herdr plugin: https://herdr.dev/docs/plugins/
+# Voice on your ChatGPT/Codex subscription; a headless Claude Code operator drives Herdr for you.
+id = "dorofeev.codex-voice"
+name = "codex-voice"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Talk to Herdr: Codex realtime voice, Claude Code operator that switches panes, opens tabs, prompts agents and runs plugin actions"
+platforms = ["macos", "linux"]
+
+# The server and its live log. Closing the pane ends the voice and the operator.
+[[panes]]
+id = "voice"
+title = "codex-voice"
+placement = "split"
+command = ["node", "server.mjs"]
+
+[[actions]]
+id = "start"
+title = "Start voice"
+contexts = ["workspace"]
+command = ["sh", "-c", "exec \"$HERDR_BIN_PATH\" plugin pane open --plugin dorofeev.codex-voice --entrypoint voice"]

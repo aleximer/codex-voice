@@ -1,0 +1,114 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>codex-voice</title>
+<style>
+  :root { --bg: #f6f6f4; --fg: #1d1d1f; --muted: #6e6e73; --you: #2f7dff; --voice: #b45cff; --work: #ff9f0a; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #111113; --fg: #f2f2f2; --muted: #9a9aa0; } }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--fg);
+         font: 15px/1.4 -apple-system, system-ui, sans-serif; }
+  main { display: grid; justify-items: center; gap: 18px; padding: 16px; }
+  canvas { width: min(80vw, 75vh); height: min(80vw, 75vh); cursor: pointer; }
+  #state { color: var(--muted); min-height: 1.4em; text-align: center; max-width: 320px; }
+</style>
+<main>
+  <canvas id="ring" width="520" height="520" title="Click to start or hang up"></canvas>
+  <div id="state">Click the ring to start</div>
+</main>
+<audio id="out" autoplay></audio>
+<script>
+const ring = document.getElementById("ring"), state = document.getElementById("state"), g = ring.getContext("2d");
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+let pc, audio, micLevel = () => 0, voiceLevel = () => 0, busy = false, mode = "idle";
+
+// RMS level 0..1 of a stream, via Web Audio.
+function meter(stream) {
+  audio ??= new AudioContext();
+  const a = audio.createAnalyser();
+  a.fftSize = 512;
+  audio.createMediaStreamSource(stream).connect(a);
+  const buf = new Float32Array(a.fftSize);
+  return () => { a.getFloatTimeDomainData(buf); let s = 0; for (const v of buf) s += v * v; return Math.min(1, Math.sqrt(s / buf.length) * 6); };
+}
+
+// Operator busy flag, so the ring shows "working" while Claude drives Herdr.
+setInterval(async () => {
+  if (!pc) return;
+  try { busy = (await (await fetch("/state")).json()).busy; } catch {}
+}, 500);
+
+// Keep the canvas backing store matched to its CSS size, so the ring stays sharp at any window size.
+function fit() {
+  const px = Math.round(ring.clientWidth * devicePixelRatio);
+  if (ring.width !== px) ring.width = ring.height = px;
+}
+addEventListener("resize", fit);
+fit();
+
+let smooth = 0, t = 0;
+function draw() {
+  t += 1 / 60;
+  const you = micLevel(), voice = voiceLevel();
+  mode = !pc ? "idle" : voice > 0.04 ? "speaking" : busy ? "working" : "listening";
+  const level = mode === "speaking" ? voice : mode === "listening" ? you : 0;
+  smooth += (level - smooth) * 0.25;
+  const color = css({ idle: "--muted", listening: "--you", speaking: "--voice", working: "--work" }[mode]);
+  // All sizes below were tuned on a 520px canvas; s scales them to the current one.
+  const W = ring.width, c = W / 2, base = W * 0.3, s = W / 520;
+  g.clearRect(0, 0, W, W);
+  g.lineCap = "round";
+  // Three wobbling rings; amplitude follows the active voice, "working" orbits instead.
+  for (let k = 0; k < 3; k++) {
+    g.beginPath();
+    for (let i = 0; i <= 120; i++) {
+      const a = (i / 120) * Math.PI * 2;
+      const wob = (Math.sin(a * (3 + k) + t * (1.5 + k * 0.7)) * (4 + smooth * 60) + Math.sin(a * 7 - t * 2) * smooth * 20) * s;
+      const r = base + (k * 14 + (mode === "idle" ? Math.sin(t) * 3 : 0)) * s + wob;
+      i ? g.lineTo(c + r * Math.cos(a), c + r * Math.sin(a)) : g.moveTo(c + r * Math.cos(a), c + r * Math.sin(a));
+    }
+    g.strokeStyle = color;
+    g.globalAlpha = 0.85 - k * 0.25;
+    g.lineWidth = (6 - k * 1.5) * s;
+    g.stroke();
+  }
+  if (mode === "working") {
+    g.globalAlpha = 1;
+    g.beginPath();
+    g.arc(c, c, base - 22 * s, t * 4, t * 4 + Math.PI * 0.6);
+    g.strokeStyle = color; g.lineWidth = 6 * s; g.stroke();
+  }
+  g.globalAlpha = 1;
+  if (pc) state.textContent = { listening: "Listening", speaking: "Speaking", working: "Working on it…" }[mode];
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+
+async function hangUp(message = "Click the ring to start") {
+  pc?.close(); pc = null; micLevel = voiceLevel = () => 0;
+  fetch("/stop", { method: "POST" }).catch(() => {});
+  state.textContent = message;
+}
+
+ring.onclick = async () => {
+  if (pc) return hangUp();
+  try {
+    state.textContent = "Asking for the microphone…";
+    const mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    pc = new RTCPeerConnection();
+    micLevel = meter(mic);
+    pc.ontrack = (e) => { document.getElementById("out").srcObject = e.streams[0]; voiceLevel = meter(e.streams[0]); };
+    pc.onconnectionstatechange = () => { if (["failed", "closed"].includes(pc?.connectionState)) hangUp("Call ended. Click to call again."); };
+    mic.getTracks().forEach((tr) => pc.addTrack(tr, mic));
+    pc.createDataChannel("oai-events");
+    await pc.setLocalDescription(await pc.createOffer());
+    state.textContent = "Calling…";
+    await audio.resume();
+    const res = await fetch("/offer", { method: "POST", body: pc.localDescription.sdp });
+    const text = await res.text();
+    if (!res.ok) throw new Error(text);
+    await pc.setRemoteDescription({ type: "answer", sdp: text });
+  } catch (e) {
+    hangUp("Failed: " + e.message);
+  }
+};
+</script>
