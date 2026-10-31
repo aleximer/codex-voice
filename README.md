@@ -70,7 +70,7 @@ What differs from Herdr:
 | Show / hide the ring | The `ring` action; hiding hangs up, and it relaunches the ring after Quit |
 | Move the ring | Drag it; the position is kept across restarts |
 
-The call action during dictation switches straight to a call. A call hangs up by itself after two minutes of
+The call action during dictation switches straight to a call, and the dictate action during a call switches straight to dictation. A call hangs up by itself after two minutes of
 silence.
 
 Bind the actions in `~/.config/herdr/config.toml`:
@@ -108,6 +108,15 @@ command = "dorofeev.codex-voice.ring"
 At call start the voice and the operator are told which pane is focused (workspace, tab, agent) and which
 page is open in terminal-browser or Herdr UI, so "this agent" or "this page" works. When focus moves
 during a call, the next request says so.
+
+### Agent skill
+
+`skills/codex-voice` lets a Claude Code agent run the same actions when you ask it to ("switch to dictate",
+"start a call", "hide the ring"). Install it for every project:
+
+```sh
+ln -s ~/Herd/codex-voice/skills/codex-voice ~/.claude/skills/codex-voice
+```
 
 ## Settings (environment)
 

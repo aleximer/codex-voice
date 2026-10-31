@@ -54,9 +54,9 @@ setInterval(async () => {
   // Hang up a forgotten call: no speech either way and no operator work for idleSeconds.
   if (pc && idleSeconds > 0 && Date.now() - lastActivity > idleSeconds * 1000) hangUp("Hung up after silence. Click to call again.");
   // From the plugin's actions: call or dictate start/stop the call; ring shows or hides the floating ring.
-  // During dictation the call shortcut switches straight to a call; the hang-up must land before the new offer.
+  // Each switches straight from the other mode (call <-> dictation); the hang-up must land before the new offer.
   if (cmd === "call") pc && dictating ? hangUp().then(() => call(false)) : ring.onclick();
-  if (cmd === "dictate") dictate();
+  if (cmd === "dictate") pc && !dictating ? hangUp().then(() => call(true)) : dictate();
   if (cmd === "ring") native?.postMessage({ toggleWindow: true });
 }, 500);
 

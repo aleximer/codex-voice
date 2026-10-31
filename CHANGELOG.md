@@ -4,6 +4,8 @@
 
 - Rex support: the same server drives Rex when started in a Rex terminal (`CODEX_VOICE_BACKEND=rex|herdr`).
   Agents come from program status, focus from the session last acted in; voice actions go in `init.lua`.
+- The dictate action during a call switches straight to dictation (it used to only hang up).
+- Agent skill `skills/codex-voice`: lets Claude Code start a call, dictation or toggle the ring on request.
 - Dictation: saying just "send" (or "send it") presses Enter in the focused pane.
 - A dropped or failed call hangs up the page and flashes the ring red, instead of looking connected.
 - Calls hang up after two minutes without speech (`CODEX_VOICE_IDLE_SECONDS`, `0` = never).
