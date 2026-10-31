@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Rex support: the same server drives Rex when started in a Rex terminal (`CODEX_VOICE_BACKEND=rex|herdr`).
+  Agents come from program status, focus from the session last acted in; voice actions go in `init.lua`.
+- Dictation: saying just "send" (or "send it") presses Enter in the focused pane.
 - A dropped or failed call hangs up the page and flashes the ring red, instead of looking connected.
 - Calls hang up after two minutes without speech (`CODEX_VOICE_IDLE_SECONDS`, `0` = never).
 - README.

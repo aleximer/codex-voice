@@ -28,12 +28,44 @@ herdr plugin link ~/Herd/codex-voice   # builds the ring with ring/build.sh
 Start it from Herdr's plugin actions (**Start voice**), or run `node server.mjs` in a pane. The pane shows the
 live log: what you said, the operator's commands, and its replies. Closing the pane ends everything.
 
+## Rex
+
+The same server drives [Rex](https://www.superlogical.com/rex) instead of Herdr: it picks Rex when started in a
+Rex terminal (or set `CODEX_VOICE_BACKEND=rex`). Rex has no plugin UI, so the ring stays a floating window.
+
+```sh
+git clone https://github.com/aleximer/codex-voice ~/Herd/codex-voice
+sh ~/Herd/codex-voice/ring/build.sh
+```
+
+Add the actions to Rex's `init.lua`; each one starts the voice in a background tab if it isn't running:
+
+```lua
+local voice = os.getenv("HOME") .. "/Herd/codex-voice/cmd.sh"
+for _, a in ipairs({ { "call", "Voice: Call / hang up" }, { "dictate", "Voice: Dictate / stop" }, { "ring", "Voice: Show / hide ring" } }) do
+  rex.action{ name = "voice_" .. a[1], title = a[2], run = function(ctx)
+    rex.exec({ "sh", voice, a[1], ctx.session_id or "" })
+  end }
+end
+rex.bind("ctrl+alt+a", "voice_call")
+rex.bind("ctrl+alt+d", "voice_dictate")
+```
+
+What differs from Herdr:
+
+- **Agents** are found by their program status (Claude Code reports it; Codex's "Action Required" title also
+  counts as waiting for approval). The operator prompts an agent by typing into its pane.
+- **Focus:** Rex doesn't say which session is on screen. The voice uses the session you last pressed a voice key
+  in or changed the layout or focus of, and that session's focused pane.
+- No Herdr UI browser: pages are read from terminal-browser only.
+
 ## Use
 
 | Do | How |
 |---|---|
 | Call / hang up | Click the ring, or the `call` action |
 | Dictate into the focused pane / stop | Right-click the ring, or the `dictate` action (in the browser page: `D`) |
+| Submit what you dictated | Say just "send" (or "send it") as its own phrase: it presses Enter |
 | Mute / unmute | Right-click the ring (browser page: `M`) |
 | Show / hide the ring | The `ring` action; hiding hangs up, and it relaunches the ring after Quit |
 | Move the ring | Drag it; the position is kept across restarts |
@@ -102,7 +134,7 @@ during a call, the next request says so.
    opens the call's control socket.
 3. When the voice delegates a request, the server passes it to the Claude operator (with a focus note) and
    speaks the operator's reply back through the call.
-4. Every 3 s it polls `herdr agent list`: agents waiting for approval turn the ring amber, and when an agent
+4. Every 3 s it polls the agents (`herdr agent list`, or `rex/agents.lua` in Rex): agents waiting for approval turn the ring amber, and when an agent
    the operator prompted finishes, the voice is told.
 
 `ring/` is the native window (Swift, [VoiceRingKit](https://github.com/Jakubantalik/Libraries.dev)): the page

@@ -1,5 +1,5 @@
-// Herdr voice on a ChatGPT/Codex subscription. The realtime voice hands every request to a headless
-// Claude Code "operator" that drives Herdr (panes, tabs, agents, plugins) and answers in a sentence or two.
+// Herdr or Rex voice on a ChatGPT/Codex subscription. The realtime voice hands every request to a headless
+// Claude Code "operator" that drives the multiplexer (panes, tabs, agents) and answers in a sentence or two.
 // Voice protocol taken from TermRover's voice bridge 0.3.6. Private endpoints: may break on any Codex/OpenAI update.
 // Usage: node server.mjs [port]
 import { createServer } from "node:http";
@@ -9,14 +9,14 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync } from
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { promisify } from "node:util";
+import { backend } from "./backends.mjs";
 
 const exec = promisify(execFile);
 const PORT = Number(process.argv[2] || process.env.CODEX_VOICE_PORT || 8765);
-const HERDR = process.env.HERDR_BIN_PATH || "herdr";
 const CALL_URL = "https://chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas";
 const LIVE_URL = "wss://api.openai.com/v1/live/";
 
-const VOICE_INSTRUCTIONS = `You are the voice of a Herdr terminal workspace full of coding agents.
+const VOICE_INSTRUCTIONS = `You are the voice of a ${backend.name} terminal workspace full of coding agents.
 Talk briefly and naturally. Delegate to the client every request to do, check, open, switch, start, or ask anything
 about the workspace, its panes, tabs, agents, or code; pass the user's request in their own words, including any
 agent or pane names they said. While a request runs, keep chatting or wait quietly.
@@ -24,13 +24,10 @@ When results or agent updates arrive, say them in one or two sentences: never re
 // Dictation calls only want the user's transcript; the page also mutes the voice in case it talks anyway.
 const DICTATE_INSTRUCTIONS = `You are a dictation microphone. Never speak, answer, or delegate. Stay silent at all times.`;
 
-const OPERATOR_PROMPT = `You are the operator behind a voice assistant for Herdr. Each user message is a spoken request,
+const OPERATOR_PROMPT = `You are the operator behind a voice assistant for ${backend.name}. Each user message is a spoken request,
 transcribed, so expect loose wording and misheard names: match agents, panes, tabs and workspaces by meaning.
-Act through the herdr CLI (see the herdr skill): focus or switch workspaces, tabs, panes and agents; open, split, zoom
-and close panes and tabs; start agents; prompt agents; read panes; list and invoke plugin actions
-(herdr plugin action). Open web pages with /Applications/Herdr.app/Contents/MacOS/Herdr browser open.
-Never do coding work yourself: hand it to the agent the user named (herdr agent prompt TARGET TEXT, without --wait)
-and say you handed it over; the voice is told when that agent finishes. If no agent was named and it is ambiguous, ask.
+${backend.howto}
+Never do coding work yourself: hand it to the agent the user named and say you handed it over; the voice is told when that agent finishes. If no agent was named and it is ambiguous, ask.
 A request may start with a [Where the user is as the call starts] or [Focus changed …] note: that pane (and any
 browser page listed) is what the user is looking at, so "this agent", "this page", "here" or an unnamed agent means it; mention the switch briefly in your reply when it matters.
 Do not close panes or tabs that run an agent, or approve an agent's permission prompt, unless the user said so explicitly.
@@ -46,14 +43,14 @@ function startOperator() {
     "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
     "--model", process.env.OPERATOR_MODEL || "sonnet",
     "--append-system-prompt", OPERATOR_PROMPT,
-    "--allowedTools", "Bash(herdr:*)", "Bash(/Applications/Herdr.app/Contents/MacOS/Herdr:*)", "Skill",
-  ], { stdio: ["pipe", "pipe", "inherit"], env: { ...process.env, HERDR_ENV: "1" } });
+    "--allowedTools", ...backend.tools,
+  ], { stdio: ["pipe", "pipe", "inherit"], env: { ...process.env, ...backend.env } });
   createInterface({ input: child.stdout }).on("line", (line) => {
     let ev; try { ev = JSON.parse(line); } catch { return; }
     if (ev.type === "assistant") for (const part of ev.message?.content || []) {
       const cmd = part.type === "tool_use" ? part.input?.command : null;
       if (cmd) console.log(`  $ ${cmd.slice(0, 160)}`);
-      const target = cmd?.match(/herdr agent prompt\s+("[^"]+"|'[^']+'|\S+)/)?.[1]?.replace(/^["']|["']$/g, "");
+      const target = cmd && backend.promptTarget(cmd);
       if (target) watched.set(target, "working");
     }
     if (ev.type === "result") {
@@ -73,27 +70,17 @@ function startOperator() {
 // Focus seen at the previous request, kept in a file so it survives restarts.
 const FOCUS_FILE = join(homedir(), ".local/state/codex-voice/focus.json");
 
-/** Herdr's focused pane, its workspace, tab and agent; null if Herdr can't say. Saved as the last seen focus. */
+/** The focused pane, its workspace, tab and agent; null if the multiplexer can't say. Saved as the last seen focus. */
 async function focusNow() {
-  let snap;
-  try { snap = JSON.parse((await exec(HERDR, ["api", "snapshot"], { maxBuffer: 16 << 20 })).stdout).result.snapshot; } catch { return null; }
-  const pane = snap.panes?.find((p) => p.pane_id === snap.focused_pane_id);
-  if (!pane) return null;
-  const agent = snap.agents?.find((a) => a.pane_id === pane.pane_id);
-  const now = {
-    pane: pane.pane_id,
-    workspace: snap.workspaces?.find((w) => w.workspace_id === pane.workspace_id)?.label ?? pane.workspace_id,
-    tab: snap.tabs?.find((t) => t.tab_id === pane.tab_id)?.label ?? pane.tab_id,
-    agent: agent?.name ?? pane.agent ?? null,
-    title: pane.terminal_title_stripped || null,
-  };
+  const now = await backend.focus();
+  if (!now) return null;
   try { mkdirSync(dirname(FOCUS_FILE), { recursive: true }); writeFileSync(FOCUS_FILE, JSON.stringify(now)); } catch {}
   return now;
 }
 const where = (f) => `pane ${f.pane} in workspace "${f.workspace}", tab "${f.tab}", running ${
-  f.agent ? `${f.agent}${f.title ? ` ("${f.title}")` : ""}` : "no agent (a plain terminal)"}`;
+  f.agent ? `${f.agent}${f.title ? ` ("${f.title}")` : ""}` : `no agent (a plain terminal${f.program ? ` running ${f.program}` : ""})`}`;
 
-/** A note for the operator when Herdr's focused pane changed since the last request, else "". */
+/** A note for the operator when the focused pane changed since the last request, else "". */
 async function focusNote() {
   let before = null;
   try { before = JSON.parse(readFileSync(FOCUS_FILE, "utf8")); } catch {}
@@ -110,7 +97,7 @@ async function openPages() {
     const { browsers = [] } = JSON.parse((await exec("terminal-browser", ["ls", "--all", "--json"], { timeout: 3000 })).stdout);
     for (const b of browsers) for (const t of b.tabs ?? []) if (t.active && t.url) pages.push({ title: t.title, url: t.url, pane: b.pane?.pane });
   } catch {}
-  try {
+  if (backend.name === "Herdr") try {
     // ponytail: Herdr UI's list shape isn't documented here; take any entry with a url that is active or focused.
     const list = JSON.parse((await exec("/Applications/Herdr.app/Contents/MacOS/Herdr", ["browser", "list", "--json"], { timeout: 3000 })).stdout);
     const walk = (v) => Array.isArray(v) ? v.forEach(walk) : v && typeof v === "object" && (
@@ -146,26 +133,26 @@ function ask(id, text) {
 
 // ---- Tell the voice when an agent the operator handed work to finishes or needs approval, and flag any agent
 // waiting for approval so the ring turns amber, call or not.
-// ponytail: 3 s poll of `herdr agent list`; switch to `herdr agent wait` per target if polling shows up in CPU.
+// ponytail: 3 s poll of every agent (one herdr or rex process); switch to events if polling shows up in CPU.
 let approval = false;
 setInterval(async () => {
   let agents;
-  try { agents = JSON.parse((await exec(HERDR, ["agent", "list"], { maxBuffer: 8 << 20 })).stdout).result.agents; } catch { return; }
-  approval = agents.some((a) => a.agent_status === "blocked");
+  try { agents = await backend.agents(); } catch { return; }
+  approval = agents.some((a) => a.status === "blocked");
   if (!control) return;
   for (const [target, last] of watched) {
-    const a = agents.find((x) => x.pane_id === target || x.name === target || x.terminal_title_stripped === target);
+    const a = agents.find((x) => backend.matches(x, target));
     if (!a) continue;
-    const status = a.agent_status;
+    const status = a.status;
     if (status === last) continue;
     watched.set(target, status);
     if (!["idle", "done", "blocked"].includes(status) || last !== "working") continue;
     if (status !== "blocked") watched.delete(target);
     let tail = "";
-    try { tail = (await exec(HERDR, ["agent", "read", a.pane_id, "--source", "recent-unwrapped", "--lines", "40"], { maxBuffer: 4 << 20 })).stdout.trim().slice(-1200); } catch {}
+    try { tail = (await backend.tail(a)).trim().slice(-1200); } catch {}
     const what = status === "blocked" ? "is waiting for approval" : "finished";
-    console.log(`← ${a.terminal_title_stripped || a.pane_id} ${what}`);
-    context(`Agent "${a.terminal_title_stripped || a.pane_id}" ${what}. Tell the user briefly. Its screen ends with:\n${tail}`);
+    console.log(`← ${a.title || a.name || a.id} ${what}`);
+    context(`Agent "${a.title || a.name || a.id}" ${what}. Tell the user briefly. Its screen ends with:\n${tail}`);
   }
 }, 3000).unref();
 
@@ -216,12 +203,14 @@ const reply = (id, text, channel = "speakable") => chunks(text).forEach((t) =>
 const context = (text, channel = "speakable") => chunks(text).forEach((t) =>
   send({ type: "session.context.append", channel, content: [{ type: "input_text", text: t }] }));
 
-// Dictation: each finished utterance is typed into the focused Herdr pane, without Enter.
+// Dictation: each finished utterance is typed into the focused pane, without Enter. An utterance that is only
+// "send" (or "send it") presses Enter instead.
+const SEND = /^\W*send( it)?\W*$/i;
 async function paste(text) {
   try {
-    const snap = JSON.parse((await exec(HERDR, ["api", "snapshot"], { maxBuffer: 16 << 20 })).stdout).result.snapshot;
-    await exec(HERDR, ["pane", "send-text", snap.focused_pane_id, text + " "]);
-    console.log(`dictated into ${snap.focused_pane_id}: ${text}`);
+    if (SEND.test(text)) return console.log(`sent (Enter) in ${await backend.enter()}`);
+    const pane = await backend.paste(text + " ");
+    console.log(`dictated into ${pane}: ${text}`);
   } catch (e) { console.error("dictation paste failed:", e.message); }
 }
 
@@ -289,9 +278,11 @@ createServer(async (req, res) => {
     dropped = false;
     return;
   }
-  // Plugin actions (Herdr keybindings): the page picks the command up with its next /state poll.
-  const m = req.method === "POST" && req.url.match(/^\/cmd\/(call|dictate|ring)$/);
+  // Plugin actions (Herdr keybindings, Rex init.lua actions): the page picks the command up with its next /state poll.
+  // Rex actions pass ?session=ID, the session the key was pressed in.
+  const m = req.method === "POST" && req.url.match(/^\/cmd\/(call|dictate|ring)(?:\?session=([\w:%-]+))?$/);
   if (m) {
+    if (m[2]) backend.setSession?.(decodeURIComponent(m[2]));
     // After Quit ring, show/hide starts it again rather than toggling a window that is gone.
     if (m[1] === "ring" && !ring && process.env.CODEX_VOICE_BROWSER !== "1" && existsSync(RING)) launchRing();
     else cmd = m[1];
@@ -311,7 +302,8 @@ createServer(async (req, res) => {
   res.writeHead(404).end();
 }).listen(PORT, "127.0.0.1", () => {
   const url = `http://localhost:${PORT}`;
-  console.log(`codex-voice on ${url}`);
+  console.log(`codex-voice on ${url} (${backend.name})`);
+  watcher = backend.watch?.();
   // Default: the floating ring window (macOS, built by ring/build.sh). CODEX_VOICE_BROWSER=1 opens a browser tab instead.
   if (process.env.CODEX_VOICE_BROWSER !== "1" && existsSync(RING)) return launchRing();
   openBrowser(url);
@@ -332,7 +324,9 @@ let ring = null;
 function openBrowser(url) {
   // Prefer a Herdr UI tab beside this pane, then terminal-browser (needs "media" in its GRANTED permissions);
   // otherwise the user opens the URL in a browser that allows the mic.
-  execFile("/Applications/Herdr.app/Contents/MacOS/Herdr", ["browser", "open", url, "--beside", "--no-focus"], (err) => {
+  const herdrUI = (cb) => backend.name === "Herdr"
+    ? execFile("/Applications/Herdr.app/Contents/MacOS/Herdr", ["browser", "open", url, "--beside", "--no-focus"], cb) : cb(true);
+  herdrUI((err) => {
     if (!err) return;
     // A restarted server would otherwise open a second split next to the one already showing the page.
     execFile("terminal-browser", ["ls", "--all"], (_, list = "") => {
@@ -343,6 +337,7 @@ function openBrowser(url) {
     });
   });
 }
-process.on("exit", () => { operator?.kill(); ring?.kill(); });
+let watcher = null;
+process.on("exit", () => { operator?.kill(); ring?.kill(); watcher?.kill(); });
 process.on("SIGINT", () => process.exit());
 process.on("SIGTERM", () => process.exit());
