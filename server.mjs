@@ -51,7 +51,9 @@ function startOperator() {
       const cmd = part.type === "tool_use" ? part.input?.command : null;
       if (cmd) console.log(`  $ ${cmd.slice(0, 160)}`);
       const target = cmd && backend.promptTarget(cmd);
-      if (target) watched.set(target, "working");
+      // "prompted", not "working": only a status seen as working first counts as finishing, so the agent's
+      // idle status from before it read the prompt isn't taken for "finished".
+      if (target) watched.set(target, "prompted");
     }
     if (ev.type === "result") {
       const text = (ev.result || (ev.is_error ? "The operator hit an error." : "Done.")).trim();
